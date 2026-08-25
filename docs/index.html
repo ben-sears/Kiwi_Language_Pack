@@ -1,0 +1,210 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Kiwi Voice Pack</title>
+<style>
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: #f4f1ea; color: #1a1a1a; height: 100vh; display: flex; flex-direction: column;
+  }
+  header {
+    padding: 14px 16px; background: #1a1a1a; color: #fff; font-weight: 600;
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  header .tag { font-weight: 400; font-size: 13px; opacity: 0.7; }
+  #chat { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 10px; }
+  .msg { max-width: 80%; padding: 10px 14px; border-radius: 14px; line-height: 1.4; white-space: pre-wrap; }
+  .msg.user { align-self: flex-end; background: #1a1a1a; color: #fff; border-bottom-right-radius: 4px; }
+  .msg.assistant { align-self: flex-start; background: #fff; border: 1px solid #e0dcd0; border-bottom-left-radius: 4px; }
+  .msg.pending { opacity: 0.5; }
+  form#composer {
+    display: flex; gap: 8px; padding: 12px; background: #fff; border-top: 1px solid #e0dcd0;
+  }
+  #input {
+    flex: 1; padding: 12px 14px; border-radius: 10px; border: 1px solid #ccc; font-size: 15px; resize: none;
+  }
+  button {
+    padding: 0 18px; border: none; border-radius: 10px; background: #1a1a1a; color: #fff;
+    font-size: 15px; cursor: pointer;
+  }
+  button:disabled { opacity: 0.4; cursor: default; }
+
+  #consent-screen, #retention-screen {
+    position: fixed; inset: 0; background: rgba(20,20,20,0.55); display: flex;
+    align-items: center; justify-content: center; padding: 20px; z-index: 10;
+  }
+  .card {
+    background: #fff; border-radius: 16px; padding: 24px; max-width: 420px; width: 100%;
+  }
+  .card h2 { margin-top: 0; }
+  .card p { line-height: 1.5; font-size: 14px; color: #333; }
+  .card label { display: flex; gap: 8px; align-items: flex-start; font-size: 14px; margin: 16px 0; }
+  .card button { width: 100%; margin-top: 8px; padding: 12px; }
+  .retention-options { display: flex; flex-direction: column; gap: 8px; margin: 16px 0; }
+  .retention-options button {
+    background: #fff; color: #1a1a1a; border: 1px solid #ccc; text-align: left; padding: 12px 14px;
+  }
+  .retention-options button:hover { background: #f4f1ea; }
+  .hidden { display: none !important; }
+</style>
+</head>
+<body>
+
+<header>
+  <span>Kiwi Voice Pack</span>
+  <span class="tag" id="tester-name"></span>
+</header>
+
+<div id="chat"></div>
+
+<form id="composer">
+  <textarea id="input" rows="1" placeholder="Type a message..." autocomplete="off"></textarea>
+  <button id="send-btn" type="submit">Send</button>
+</form>
+
+<div id="consent-screen" class="hidden">
+  <div class="card">
+    <h2>Before we start</h2>
+    <p>This is a test version of the Kiwi Voice Pack. Your messages and the AI's responses are logged so we can review how well it's working and improve it.</p>
+    <p><strong>Please don't paste real client names, phone numbers, or other personal details</strong> into your messages.</p>
+    <label>
+      <input type="checkbox" id="consent-check" />
+      I understand and agree to continue
+    </label>
+    <button id="consent-btn" disabled>Continue</button>
+  </div>
+</div>
+
+<div id="retention-screen" class="hidden">
+  <div class="card">
+    <h2>Quick one</h2>
+    <p>If we took this away tomorrow, would you miss it?</p>
+    <div class="retention-options">
+      <button data-answer="not_at_all">Not at all</button>
+      <button data-answer="a_little">A little</button>
+      <button data-answer="quite_a_bit">Quite a bit</button>
+      <button data-answer="would_be_annoyed">I'd be annoyed</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const FUNCTION_URL = "https://gsjbpzculbscinjbhvlz.supabase.co/functions/v1/kiwi-voice-chat";
+
+const params = new URLSearchParams(location.search);
+const slug = params.get("t");
+
+const chatEl = document.getElementById("chat");
+const form = document.getElementById("composer");
+const input = document.getElementById("input");
+const sendBtn = document.getElementById("send-btn");
+const consentScreen = document.getElementById("consent-screen");
+const consentCheck = document.getElementById("consent-check");
+const consentBtn = document.getElementById("consent-btn");
+const retentionScreen = document.getElementById("retention-screen");
+const testerNameEl = document.getElementById("tester-name");
+
+if (!slug) {
+  document.body.innerHTML = "<p style='padding:20px'>Missing link parameter. Check the link you were sent.</p>";
+  throw new Error("no slug");
+}
+
+async function call(action, extra = {}) {
+  const res = await fetch(FUNCTION_URL, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ action, slug, ...extra }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || "request failed");
+  return data;
+}
+
+function addMessage(role, text, pending = false) {
+  const div = document.createElement("div");
+  div.className = "msg " + role + (pending ? " pending" : "");
+  div.textContent = text;
+  chatEl.appendChild(div);
+  chatEl.scrollTop = chatEl.scrollHeight;
+  return div;
+}
+
+function maybeShowRetention(consentGivenAt, retentionAnswer) {
+  if (retentionAnswer) return;
+  if (!consentGivenAt) return;
+  const daysSince = (Date.now() - new Date(consentGivenAt).getTime()) / 86400000;
+  if (daysSince >= 5) retentionScreen.classList.remove("hidden");
+}
+
+async function init() {
+  let tester;
+  try {
+    tester = await call("get_tester");
+  } catch (e) {
+    document.body.innerHTML = "<p style='padding:20px'>Couldn't find your link — check it's correct or get in touch.</p>";
+    return;
+  }
+
+  testerNameEl.textContent = tester.name || "";
+
+  if (!tester.consent_given_at) {
+    consentScreen.classList.remove("hidden");
+  } else {
+    maybeShowRetention(tester.consent_given_at, tester.retention_answer);
+  }
+
+  try {
+    const { messages } = await call("history");
+    for (const m of messages) addMessage(m.role, m.content);
+  } catch (e) {
+    // fine to start with empty history
+  }
+}
+
+consentCheck.addEventListener("change", () => {
+  consentBtn.disabled = !consentCheck.checked;
+});
+
+consentBtn.addEventListener("click", async () => {
+  await call("consent");
+  consentScreen.classList.add("hidden");
+});
+
+document.querySelectorAll(".retention-options button").forEach((btn) => {
+  btn.addEventListener("click", async () => {
+    await call("retention", { answer: btn.dataset.answer });
+    retentionScreen.classList.add("hidden");
+  });
+});
+
+form.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const text = input.value.trim();
+  if (!text) return;
+  input.value = "";
+  sendBtn.disabled = true;
+
+  addMessage("user", text);
+  const pendingEl = addMessage("assistant", "...", true);
+
+  try {
+    const { reply } = await call("chat", { message: text });
+    pendingEl.textContent = reply;
+    pendingEl.classList.remove("pending");
+  } catch (err) {
+    pendingEl.textContent = "Something went wrong — try again.";
+    pendingEl.classList.remove("pending");
+  }
+  sendBtn.disabled = false;
+  input.focus();
+});
+
+init();
+</script>
+
+</body>
+</html>
